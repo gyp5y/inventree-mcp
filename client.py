@@ -159,7 +159,7 @@ class InvenTreeClient:
         try:
             from inventree.part import PartParameterTemplate
         except Exception:
-            result = await run_sync(self.api.get, "/api/part/parameter-template/")
+            result = await run_sync(self.api.get, "/api/parameter/template/")
             if isinstance(result, dict) and "results" in result:
                 return result["results"]
             return result if isinstance(result, list) else []
@@ -168,10 +168,95 @@ class InvenTreeClient:
         except NotImplementedError:
             # inventree-python can gate some classes by API version; direct REST
             # call still works against newer servers.
-            result = await run_sync(self.api.get, "/api/part/parameter-template/")
+            result = await run_sync(self.api.get, "/api/parameter/template/")
             if isinstance(result, dict) and "results" in result:
                 return result["results"]
             return result if isinstance(result, list) else []
+
+
+    # ── Part parameter management (generic Parameter API) ────────────
+
+    async def _parameter_api(self, method: str, path: str, data: dict = None):
+        """Call the current InvenTree parameter REST API off the event loop."""
+        fn = getattr(self.api, method)
+        if data is None:
+            return await run_sync(fn, path)
+        return await run_sync(fn, path, data)
+
+    async def part_create_parameter_template(self, data: dict) -> dict:
+        if not isinstance(data.get("name"), str) or not data["name"].strip():
+            raise ValueError("Template name is required")
+        return await self._parameter_api("post", "/api/parameter/template/", data)
+
+    async def part_update_parameter_template(self, pk: int, data: dict) -> dict:
+        if not pk or not data:
+            raise ValueError("Template ID and non-empty data required")
+        return await self._parameter_api("patch", f"/api/parameter/template/{pk}/", data)
+
+    async def part_create_parameter(self, part_id: int, data: dict) -> dict:
+        if not part_id or not isinstance(data, dict):
+            raise ValueError("part_id and parameter data are required")
+        if not data.get("template") or data.get("data") is None:
+            raise ValueError("Parameter requires template ID and data value")
+        payload = {"model_type": "part", "model_id": part_id, **data}
+        # Never allow data to override the part identity.
+        payload["model_type"], payload["model_id"] = "part", part_id
+        return await self._parameter_api("post", "/api/parameter/", payload)
+
+    async def part_update_parameter(self, part_id: int, parameter_id: int, data: dict) -> dict:
+        if not parameter_id or not data:
+            raise ValueError("Parameter ID and non-empty data required")
+        current = await self._parameter_api("get", f"/api/parameter/{parameter_id}/")
+        if current.get("model_id") != part_id or current.get("model_type") != "part":
+            raise ValueError("Parameter does not belong to the specified part")
+        if any(k in data for k in ("model_id", "model_type", "template", "pk")):
+            raise ValueError("Only parameter value / note can be edited here")
+        return await self._parameter_api("patch", f"/api/parameter/{parameter_id}/", data)
+
+    async def part_delete_parameter(self, part_id: int, parameter_id: int) -> dict:
+        current = await self._parameter_api("get", f"/api/parameter/{parameter_id}/")
+        if current.get("model_id") != part_id or current.get("model_type") != "part":
+            raise ValueError("Parameter does not belong to the specified part")
+        await self._parameter_api("delete", f"/api/parameter/{parameter_id}/")
+        return {"deleted": True, "pk": parameter_id, "part": part_id}
+
+    async def part_upsert_parameters(self, part_id: int, parameters: list[dict]) -> dict:
+        """Upsert by template ID; preserve unrelated parameters and report partial failures."""
+        if not part_id or not isinstance(parameters, list) or not parameters:
+            raise ValueError("part_id and a non-empty parameters list required")
+        existing = await self.part_get_parameters(part_id)
+        by_template = {}
+        for entry in existing:
+            key = entry.get("template")
+            if key is not None:
+                by_template.setdefault(int(key), []).append(entry)
+        seen, results = set(), []
+        for item in parameters:
+            try:
+                if not isinstance(item, dict) or not item.get("template") or item.get("data") is None:
+                    raise ValueError("Each item requires template ID and data")
+                tid = int(item["template"])
+                if tid in seen:
+                    raise ValueError(f"Duplicate template ID {tid} in request")
+                seen.add(tid)
+                matches = by_template.get(tid, [])
+                if len(matches) > 1:
+                    raise ValueError(f"Multiple existing values for template {tid}; resolve manually")
+                payload = {k: v for k, v in item.items() if k in ("data", "note")}
+                if matches:
+                    current = matches[0]
+                    if all(current.get(k) == v for k, v in payload.items()):
+                        results.append({"template": tid, "action": "unchanged", "pk": current["pk"]})
+                    else:
+                        updated = await self.part_update_parameter(part_id, current["pk"], payload)
+                        results.append({"template": tid, "action": "updated", "result": updated})
+                else:
+                    created = await self.part_create_parameter(part_id, {**payload, "template": tid})
+                    results.append({"template": tid, "action": "created", "result": created})
+            except Exception as exc:
+                results.append({"template": item.get("template") if isinstance(item, dict) else None,
+                                "action": "error", "error": str(exc)})
+        return {"part": part_id, "results": results, "success": all(r["action"] != "error" for r in results)}
 
     async def part_get_test_templates(self, pk: int) -> list[dict]:
         part = await run_sync(Part, self.api, pk)

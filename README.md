@@ -128,3 +128,15 @@ it is the template ID. Upsert is keyed by template ID and refuses to guess
 when an existing part has multiple values for one template. Batch results
 report individual errors; they are not an atomic transaction. Verify exact
 values and units against the manufacturer datasheet before insertion.
+
+### Parameter ownership and shared-template safety
+
+Updating or deleting a parameter checks its ID against the requested part's
+`get_parameters` collection, rather than relying on the version-dependent
+`model_type` / `model_id` representation of the generic parameter endpoint.
+Only `data` (value) and `note` may be changed by `update_parameter`.
+
+A parameter template is shared by all parts using it. To prevent accidentally
+changing every capacitor when correcting one capacitance, `update_parameter_template`
+requires an explicit `data.allow_shared_template_change: true` flag. Use
+`update_parameter` / `upsert_parameters` to correct one component's value.

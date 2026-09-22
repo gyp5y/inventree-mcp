@@ -151,28 +151,11 @@ class InvenTreeClient:
         return _serialize_list(items)
 
     async def part_get_parameter_templates(self) -> list[dict]:
-        """List part parameter templates.
-
-        inventree-python has changed class names across versions; fall back to
-        hitting the REST endpoint directly if the helper class is unavailable.
-        """
-        try:
-            from inventree.part import PartParameterTemplate
-        except Exception:
-            result = await run_sync(self.api.get, "/api/parameter/template/")
-            if isinstance(result, dict) and "results" in result:
-                return result["results"]
-            return result if isinstance(result, list) else []
-        try:
-            return await self._list(PartParameterTemplate)
-        except NotImplementedError:
-            # inventree-python can gate some classes by API version; direct REST
-            # call still works against newer servers.
-            result = await run_sync(self.api.get, "/api/parameter/template/")
-            if isinstance(result, dict) and "results" in result:
-                return result["results"]
-            return result if isinstance(result, list) else []
-
+        """List generic InvenTree parameter templates."""
+        result = await run_sync(self.api.get, "/api/parameter/template/")
+        if isinstance(result, dict) and "results" in result:
+            return result["results"]
+        return result if isinstance(result, list) else []
 
     # ── Part parameter management (generic Parameter API) ────────────
 
@@ -207,7 +190,7 @@ class InvenTreeClient:
         if not parameter_id or not data:
             raise ValueError("Parameter ID and non-empty data required")
         current = await self._parameter_api("get", f"/api/parameter/{parameter_id}/")
-        if current.get("model_id") != part_id or current.get("model_type") != "part":
+        if current.get("model_id") != part_id or current.get("model_type") not in ("part", "Part"):
             raise ValueError("Parameter does not belong to the specified part")
         if any(k in data for k in ("model_id", "model_type", "template", "pk")):
             raise ValueError("Only parameter value / note can be edited here")
@@ -215,7 +198,7 @@ class InvenTreeClient:
 
     async def part_delete_parameter(self, part_id: int, parameter_id: int) -> dict:
         current = await self._parameter_api("get", f"/api/parameter/{parameter_id}/")
-        if current.get("model_id") != part_id or current.get("model_type") != "part":
+        if current.get("model_id") != part_id or current.get("model_type") not in ("part", "Part"):
             raise ValueError("Parameter does not belong to the specified part")
         await self._parameter_api("delete", f"/api/parameter/{parameter_id}/")
         return {"deleted": True, "pk": parameter_id, "part": part_id}

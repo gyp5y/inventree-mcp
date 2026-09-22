@@ -172,9 +172,27 @@ class InvenTreeClient:
         return await self._parameter_api("post", "/api/parameter/template/", data)
 
     async def part_update_parameter_template(self, pk: int, data: dict) -> dict:
-        if not pk or not data:
+        """Only permit explicit, acknowledged changes to shared templates.
+
+        Templates are global definitions: modifying Capacitance units, for example,
+        changes the interpretation of values for every component using it.
+        """
+        if not pk or not isinstance(data, dict) or not data:
             raise ValueError("Template ID and non-empty data required")
-        return await self._parameter_api("patch", f"/api/parameter/template/{pk}/", data)
+        payload = data.copy()
+        acknowledged = payload.pop("allow_shared_template_change", False)
+        if acknowledged is not True:
+            raise ValueError(
+                "Parameter templates are shared across parts. To change a value "
+                "for one part, use update_parameter or upsert_parameters instead. "
+                "To intentionally change the global template, provide "
+                "data.allow_shared_template_change=true."
+            )
+        if not payload:
+            raise ValueError("No template fields supplied")
+        if any(k in payload for k in ("pk", "id")):
+            raise ValueError("Template identity cannot be changed")
+        return await self._parameter_api("patch", f"/api/parameter/template/{pk}/", payload)
 
     async def part_create_parameter(self, part_id: int, data: dict) -> dict:
         if not part_id or not isinstance(data, dict):
@@ -186,20 +204,35 @@ class InvenTreeClient:
         payload["model_type"], payload["model_id"] = "part", part_id
         return await self._parameter_api("post", "/api/parameter/", payload)
 
-    async def part_update_parameter(self, part_id: int, parameter_id: int, data: dict) -> dict:
-        if not parameter_id or not data:
-            raise ValueError("Parameter ID and non-empty data required")
-        current = await self._parameter_api("get", f"/api/parameter/{parameter_id}/")
-        if current.get("model_id") != part_id or current.get("model_type") not in ("part", "Part"):
+    async def _part_parameter(self, part_id: int, parameter_id: int) -> dict:
+        """Verify ownership using the part's parameter collection, not REST model_type.
+
+        The generic parameter detail response may represent model_type/model_id in
+        a different format across InvenTree releases; Part.getParameters is the
+        authoritative collection for the requested part.
+        """
+        if not isinstance(part_id, int) or isinstance(part_id, bool) or part_id <= 0:
+            raise ValueError("A valid part ID is required")
+        if not isinstance(parameter_id, int) or isinstance(parameter_id, bool) or parameter_id <= 0:
+            raise ValueError("A valid parameter ID is required")
+        parameters = await self.part_get_parameters(part_id)
+        matches = [entry for entry in parameters
+                   if isinstance(entry, dict)
+                   and str(entry.get("pk", entry.get("id", ""))) == str(parameter_id)]
+        if len(matches) != 1:
             raise ValueError("Parameter does not belong to the specified part")
-        if any(k in data for k in ("model_id", "model_type", "template", "pk")):
+        return matches[0]
+
+    async def part_update_parameter(self, part_id: int, parameter_id: int, data: dict) -> dict:
+        if not isinstance(data, dict) or not data:
+            raise ValueError("Non-empty parameter data required")
+        if any(k not in ("data", "note") for k in data):
             raise ValueError("Only parameter value / note can be edited here")
+        await self._part_parameter(part_id, parameter_id)
         return await self._parameter_api("patch", f"/api/parameter/{parameter_id}/", data)
 
     async def part_delete_parameter(self, part_id: int, parameter_id: int) -> dict:
-        current = await self._parameter_api("get", f"/api/parameter/{parameter_id}/")
-        if current.get("model_id") != part_id or current.get("model_type") not in ("part", "Part"):
-            raise ValueError("Parameter does not belong to the specified part")
+        await self._part_parameter(part_id, parameter_id)
         await self._parameter_api("delete", f"/api/parameter/{parameter_id}/")
         return {"deleted": True, "pk": parameter_id, "part": part_id}
 

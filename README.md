@@ -104,3 +104,27 @@ The `inventree-python` library is synchronous (requests-based). All calls are of
 ## License
 
 MIT
+
+## Part parameter management
+
+The `part` tool supports six additional operations:
+`create_parameter_template`, `update_parameter_template`,
+`create_parameter`, `update_parameter`, `delete_parameter`,
+and `upsert_parameters`. Use `get_parameter_templates` to discover
+template IDs and `get_parameters` to inspect existing part parameters.
+
+Example calls (the MCP `part` tool arguments):
+
+```json
+{"operation":"create_parameter_template","data":{"name":"Drain-source voltage","units":"V"}}
+{"operation":"create_parameter","pk":123,"data":{"template":12,"data":"60 V"}}
+{"operation":"upsert_parameters","pk":123,"data":{"parameters":[{"template":12,"data":"60 V"},{"template":13,"data":"5 A"}]}}
+{"operation":"update_parameter","pk":123,"data":{"parameter_id":456,"data":"55 V"}}
+{"operation":"delete_parameter","pk":123,"data":{"parameter_id":456}}
+```
+
+`pk` denotes the part ID except for `update_parameter_template`, where
+it is the template ID. Upsert is keyed by template ID and refuses to guess
+when an existing part has multiple values for one template. Batch results
+report individual errors; they are not an atomic transaction. Verify exact
+values and units against the manufacturer datasheet before insertion.

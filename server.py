@@ -125,13 +125,19 @@ async def part(
         get_manufacturers, get_parameters, get_parameter_templates,
         get_test_templates, get_related, get_builds, get_internal_prices,
         get_sale_prices, list_categories, get_category, get_category_parameters
-      Write: create, update, create_category
+      Write: create, update, create_category, create_parameter_template,
+        update_parameter_template, create_parameter, update_parameter,
+        upsert_parameters, delete_parameter
       Delete: delete
 
     Args:
         operation: One of the operations listed above.
         pk: Part or category ID (required for get/update/delete and sub-queries).
-        data: Dict of fields for create/update (e.g. {"name": "Seal Kit", "category": 5}).
+        data: Dict of fields for create/update. Parameter operations use pk=part ID;
+          create_parameter: {"template": 12, "data": "60 V", "note": "..."};
+          update/delete_parameter: {"parameter_id": 34, "data": "..." };
+          upsert_parameters: {"parameters": [{"template": 12, "data": "60 V"}]}.
+          Template operations use pk=template ID for update.
         search: Text search filter for list/list_categories.
         category: Category ID filter for list.
         limit: Max results for list (default 25).
@@ -184,6 +190,31 @@ async def part(
 
     elif operation == "get_parameter_templates":
         return _json(await c.part_get_parameter_templates())
+
+    elif operation == "create_parameter_template":
+        return _json(await c.part_create_parameter_template(data or {}))
+
+    elif operation == "update_parameter_template":
+        return _json(await c.part_update_parameter_template(pk, data or {}))
+
+    elif operation == "create_parameter":
+        return _json(await c.part_create_parameter(pk, data or {}))
+
+    elif operation == "update_parameter":
+        if not isinstance(data, dict) or "parameter_id" not in data:
+            raise ValueError("data.parameter_id required")
+        return _json(await c.part_update_parameter(pk, data["parameter_id"],
+            {k: v for k, v in data.items() if k != "parameter_id"}))
+
+    elif operation == "delete_parameter":
+        if not isinstance(data, dict) or "parameter_id" not in data:
+            raise ValueError("data.parameter_id required")
+        return _json(await c.part_delete_parameter(pk, data["parameter_id"]))
+
+    elif operation == "upsert_parameters":
+        if not isinstance(data, dict) or not isinstance(data.get("parameters"), list):
+            raise ValueError('data must contain "parameters" list')
+        return _json(await c.part_upsert_parameters(pk, data["parameters"]))
 
     elif operation == "get_test_templates":
         return _json(await c.part_get_test_templates(pk))

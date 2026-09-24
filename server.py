@@ -12,8 +12,17 @@ import os
 import sys
 from typing import Any
 
+import anyio
 from dotenv import load_dotenv
+from mcp.server.stdio import stdio_server
 from mcp.server.fastmcp import FastMCP
+from mcp.shared.message import SessionMessage
+from mcp.types import (
+    JSONRPCMessage,
+    JSONRPCRequest,
+    JSONRPCResponse,
+    LATEST_PROTOCOL_VERSION,
+)
 
 load_dotenv()
 
@@ -24,6 +33,63 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("inventree_mcp")
+
+
+def _discover_result() -> dict[str, Any]:
+    """Build a lightweight discovery response for newer MCP clients."""
+    init_options = mcp._mcp_server.create_initialization_options()
+    result = {
+        "resultType": "complete",
+        "supportedVersions": [LATEST_PROTOCOL_VERSION],
+        "capabilities": init_options.capabilities.model_dump(
+            by_alias=True, mode="json", exclude_none=True
+        ),
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+                "name": init_options.server_name,
+                "version": init_options.server_version,
+            }
+        },
+        "ttlMs": 3600000,
+        "cacheScope": "public",
+    }
+    if init_options.instructions:
+        result["instructions"] = init_options.instructions
+    return result
+
+
+async def _handle_stdio_discover(message: SessionMessage, write_stream) -> bool:
+    """Respond to MCP 2026 server/discover probes before SDK validation."""
+    root = message.message.root
+    if not isinstance(root, JSONRPCRequest) or root.method != "server/discover":
+        return False
+
+    response = JSONRPCResponse(jsonrpc="2.0", id=root.id, result=_discover_result())
+    await write_stream.send(SessionMessage(message=JSONRPCMessage(response)))
+    return True
+
+
+async def run_stdio_with_discovery_async() -> None:
+    """Run stdio transport with a compatibility shim for server/discover."""
+    async with stdio_server() as (read_stream, write_stream):
+        filtered_writer, filtered_read = anyio.create_memory_object_stream(0)
+
+        async def filter_discovery_requests() -> None:
+            async with filtered_writer:
+                async for message in read_stream:
+                    if isinstance(message, Exception):
+                        await filtered_writer.send(message)
+                    elif not await _handle_stdio_discover(message, write_stream):
+                        await filtered_writer.send(message)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(filter_discovery_requests)
+            await mcp._mcp_server.run(
+                filtered_read,
+                write_stream,
+                mcp._mcp_server.create_initialization_options(),
+            )
+            tg.cancel_scope.cancel()
 
 # ── Lazy client singleton ────────────────────────────────────────────
 
@@ -1077,4 +1143,4 @@ if __name__ == "__main__":
         mcp.run(transport="sse", port=port)
     else:
         logger.info("Starting InvenTree MCP Server on STDIO")
-        mcp.run(transport="stdio")
+        anyio.run(run_stdio_with_discovery_async)

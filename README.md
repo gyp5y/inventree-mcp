@@ -140,3 +140,34 @@ A parameter template is shared by all parts using it. To prevent accidentally
 changing every capacitor when correcting one capacitance, `update_parameter_template`
 requires an explicit `data.allow_shared_template_change: true` flag. Use
 `update_parameter` / `upsert_parameters` to correct one component's value.
+
+## Upload images from chat
+
+Chat attachments are **not automatically visible to the remote MCP server**.
+The chat client must first provide the bytes of an accessible image (for example,
+from a user-uploaded project photo), encoded as base64. A chat-internal image ID,
+message link, or sandbox path on a different host is not sufficient. The MCP
+server does not attempt to scrape chat histories or fetch arbitrary image URLs.
+
+For a part's **main image**, call the `part` tool:
+
+```json
+{"operation":"upload_image","pk":123,"data":{"image_base64":"<BASE64_JPEG>","filename":"mosfet-marking.jpg"}}
+```
+
+Use `data.replace=true` to explicitly replace an existing main image. For
+additional photographs (marking, package, tray), call `attachment`:
+
+```json
+{"operation":"upload_image","model_type":"part","model_id":123,"image_base64":"<BASE64_PNG>","filename":"package.png","comment":"Original photo from inventory chat"}
+```
+
+`attachment.upload_image` also supports `model_type="stockitem"`. The existing
+`attachment.upload` operation accepts a file path **on the MCP server**; it
+cannot read a local path from a different ChatGPT or Docker host. The `part`
+`upload_image` operation also supports `data.file_path` on the MCP server.
+
+Supported formats: JPEG, PNG, GIF, WebP (max 10 MiB). Chat bytes are written
+into a temporary directory for the duration of the upload and removed after it.
+The image persists in InvenTree after successful upload. InvenTree must have
+media storage correctly configured and the API token must allow file upload.

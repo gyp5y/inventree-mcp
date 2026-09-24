@@ -18,9 +18,10 @@ from mcp.server.stdio import stdio_server
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.message import SessionMessage
 from mcp.types import (
+    ErrorData,
+    JSONRPCError,
     JSONRPCMessage,
     JSONRPCRequest,
-    JSONRPCResponse,
     LATEST_PROTOCOL_VERSION,
 )
 
@@ -35,36 +36,19 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("inventree_mcp")
 
 
-def _discover_result() -> dict[str, Any]:
-    """Build a lightweight discovery response for newer MCP clients."""
-    init_options = mcp._mcp_server.create_initialization_options()
-    result = {
-        "resultType": "complete",
-        "supportedVersions": [LATEST_PROTOCOL_VERSION],
-        "capabilities": init_options.capabilities.model_dump(
-            by_alias=True, mode="json", exclude_none=True
-        ),
-        "_meta": {
-            "io.modelcontextprotocol/serverInfo": {
-                "name": init_options.server_name,
-                "version": init_options.server_version,
-            }
-        },
-        "ttlMs": 3600000,
-        "cacheScope": "public",
-    }
-    if init_options.instructions:
-        result["instructions"] = init_options.instructions
-    return result
-
-
 async def _handle_stdio_discover(message: SessionMessage, write_stream) -> bool:
-    """Respond to MCP 2026 server/discover probes before SDK validation."""
+    """Make modern clients fall back cleanly when this SDK is legacy-only."""
     root = message.message.root
     if not isinstance(root, JSONRPCRequest) or root.method != "server/discover":
         return False
+    if LATEST_PROTOCOL_VERSION >= "2026-07-28":
+        return False
 
-    response = JSONRPCResponse(jsonrpc="2.0", id=root.id, result=_discover_result())
+    response = JSONRPCError(
+        jsonrpc="2.0",
+        id=root.id,
+        error=ErrorData(code=-32601, message="Method not found"),
+    )
     await write_stream.send(SessionMessage(message=JSONRPCMessage(response)))
     return True
 

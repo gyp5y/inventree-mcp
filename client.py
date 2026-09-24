@@ -5,8 +5,13 @@ semaphore to limit concurrent thread usage.
 """
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
+import os
+import tempfile
+from pathlib import Path
 from functools import partial
 from typing import Any, Optional
 
@@ -734,6 +739,90 @@ class InvenTreeClient:
         url = f"/api/report/{template_id}/print/"
         result = await run_sync(self.api.post, url, {"items": item_ids, "model_type": model_type})
         return result if isinstance(result, dict) else {"printed": True}
+
+    # ── Image uploads ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _decode_image(image_base64: str, filename: str) -> tuple[bytes, str]:
+        """Accept supported image bytes; never fetch user-supplied URLs on the server."""
+        if not isinstance(image_base64, str) or not image_base64:
+            raise ValueError("image_base64 must contain a non-empty base64 image")
+        # Support data URLs commonly produced by chat / UI clients.
+        if image_base64.startswith("data:"):
+            header, sep, image_base64 = image_base64.partition(",")
+            if not sep or ";base64" not in header.lower():
+                raise ValueError("Expected a base64-encoded image data URL")
+        # Reject oversized input before allocating decoded bytes (10 MiB maximum).
+        if len(image_base64) > 14_500_000:
+            raise ValueError("Image exceeds the 10 MiB size limit")
+        try:
+            raw = base64.b64decode(image_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("Invalid base64 image") from exc
+        if not raw or len(raw) > 10 * 1024 * 1024:
+            raise ValueError("Image must be 1 byte to 10 MiB")
+        if raw.startswith(b"\\xff\\xd8\\xff"):
+            extension = ".jpg"
+        elif raw.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+            extension = ".png"
+        elif raw.startswith((b"GIF87a", b"GIF89a")):
+            extension = ".gif"
+        elif len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            extension = ".webp"
+        else:
+            raise ValueError("Unsupported image format; use JPEG, PNG, GIF or WebP")
+        if not isinstance(filename, str) or not filename.strip():
+            filename = "chat-photo" + extension
+        name = Path(filename).name
+        if name in (".", "..") or not name.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+            name = "chat-photo" + extension
+        return raw, name
+
+    async def part_upload_image(
+        self, part_id: int, *, image_base64: str = None,
+        file_path: str = None, filename: str = "chat-photo.jpg",
+        replace: bool = False,
+    ) -> dict:
+        """Upload the primary part image from chat bytes or a server-local file."""
+        if not isinstance(part_id, int) or isinstance(part_id, bool) or part_id <= 0:
+            raise ValueError("A valid part ID is required")
+        if bool(image_base64) == bool(file_path):
+            raise ValueError("Provide exactly one of image_base64 or file_path")
+        part = await run_sync(Part, self.api, part_id)
+        current_image = _serialize(part).get("image")
+        if current_image and not replace:
+            raise ValueError("Part already has an image; set replace=true to overwrite it")
+        if file_path:
+            path = Path(file_path).expanduser().resolve(strict=True)
+            if not path.is_file() or path.stat().st_size > 10 * 1024 * 1024:
+                raise ValueError("Image file must exist and be at most 10 MiB")
+            if path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                raise ValueError("Unsupported image extension")
+            await run_sync(part.uploadImage, str(path))
+        else:
+            raw, name = self._decode_image(image_base64, filename)
+            # No shared persistent copies of chat photographs on the MCP host.
+            with tempfile.TemporaryDirectory(prefix="inventree-chat-photo-") as folder:
+                path = Path(folder) / name
+                path.write_bytes(raw)
+                await run_sync(part.uploadImage, str(path))
+        await run_sync(part.reload)
+        return {"part": part_id, "image": _serialize(part).get("image"), "uploaded": True}
+
+    async def attachment_upload_image(
+        self, model_type: str, model_id: int, *, image_base64: str,
+        filename: str = "chat-photo.jpg", comment: str = "",
+    ) -> dict:
+        """Attach a chat image to a part or stock item as a separate photo."""
+        if model_type not in ("part", "stockitem"):
+            raise ValueError("Image attachments are supported for part and stockitem")
+        if not isinstance(model_id, int) or isinstance(model_id, bool) or model_id <= 0:
+            raise ValueError("A valid model_id is required")
+        raw, name = self._decode_image(image_base64, filename)
+        with tempfile.TemporaryDirectory(prefix="inventree-chat-photo-") as folder:
+            path = Path(folder) / name
+            path.write_bytes(raw)
+            return await self.attachment_upload(model_type, model_id, str(path), comment)
 
     # ── Attachment operations ────────────────────────────────────────
 

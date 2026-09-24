@@ -125,7 +125,7 @@ async def part(
         get_manufacturers, get_parameters, get_parameter_templates,
         get_test_templates, get_related, get_builds, get_internal_prices,
         get_sale_prices, list_categories, get_category, get_category_parameters
-      Write: create, update, create_category, create_parameter_template,
+      Write: create, update, upload_image, create_category, create_parameter_template,
         update_parameter_template, create_parameter, update_parameter,
         upsert_parameters, delete_parameter
       Delete: delete
@@ -133,7 +133,7 @@ async def part(
     Args:
         operation: One of the operations listed above.
         pk: Part or category ID (required for get/update/delete and sub-queries).
-        data: Dict of fields for create/update. Parameter operations use pk=part ID;
+        data: Dict of fields for create/update. upload_image uses pk=part ID and\n          data={"image_base64": "...", "filename": "photo.jpg", "replace": false}\n          or data={"file_path": "/path/on/mcp/server/photo.jpg", "replace": false}.\n          Parameter operations use pk=part ID;
           create_parameter: {"template": 12, "data": "60 V", "note": "..."};
           update/delete_parameter: {"parameter_id": 34, "data": "..." };
           upsert_parameters: {"parameters": [{"template": 12, "data": "60 V"}]}.
@@ -169,6 +169,13 @@ async def part(
 
     elif operation == "delete":
         return _json(await c.part_delete(pk))
+
+    elif operation == "upload_image":
+        return _json(await c.part_upload_image(
+            pk, image_base64=(data or {}).get("image_base64"),
+            file_path=(data or {}).get("file_path"),
+            filename=(data or {}).get("filename", "chat-photo.jpg"),
+            replace=(data or {}).get("replace", False)))
 
     elif operation == "get_stock":
         return _json(await c.part_get_stock(pk))
@@ -948,12 +955,14 @@ async def attachment(
     link: str = None,
     comment: str = "",
     destination: str = None,
+    image_base64: str = None,
+    filename: str = "chat-photo.jpg",
 ) -> str:
     """File attachment management for any InvenTree object.
 
     Operations:
       Read: list, download
-      Write: upload, upload_link
+      Write: upload, upload_link, upload_image
       Delete: delete
 
     Args:
@@ -961,8 +970,7 @@ async def attachment(
         model_type: Object type (part, stockitem, build, purchaseorder, salesorder, company).
         model_id: Object ID for list/upload/upload_link.
         attachment_id: Attachment ID for download/delete.
-        file_path: Local file path for upload.
-        link: URL for upload_link.
+        file_path: Local file path on the MCP server for upload.\n        image_base64: Base64 image data or data URL for upload_image.\n        filename: Image filename for upload_image.\n        link: URL for upload_link.
         comment: Optional comment for uploads.
         destination: File path to save downloaded attachment to.
 
@@ -979,6 +987,11 @@ async def attachment(
 
     elif operation == "upload_link":
         return _json(await c.attachment_upload_link(model_type, model_id, link, comment))
+
+    elif operation == "upload_image":
+        return _json(await c.attachment_upload_image(
+            model_type, model_id, image_base64=image_base64,
+            filename=filename, comment=comment))
 
     elif operation == "download":
         return _json(await c.attachment_download(attachment_id, destination))

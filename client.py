@@ -761,9 +761,9 @@ class InvenTreeClient:
             raise ValueError("Invalid base64 image") from exc
         if not raw or len(raw) > 10 * 1024 * 1024:
             raise ValueError("Image must be 1 byte to 10 MiB")
-        if raw.startswith(b"\\xff\\xd8\\xff"):
+        if raw.startswith(b"\xff\xd8\xff"):
             extension = ".jpg"
-        elif raw.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
             extension = ".png"
         elif raw.startswith((b"GIF87a", b"GIF89a")):
             extension = ".gif"
@@ -776,6 +776,8 @@ class InvenTreeClient:
         name = Path(filename).name
         if name in (".", "..") or not name.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
             name = "chat-photo" + extension
+        elif Path(name).suffix.lower() not in ({".jpg", ".jpeg"} if extension == ".jpg" else {extension}):
+            name = Path(name).stem + extension
         return raw, name
 
     async def part_upload_image(

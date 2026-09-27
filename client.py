@@ -750,14 +750,22 @@ class InvenTreeClient:
         """Accept supported image bytes; never fetch user-supplied URLs on the server."""
         if not isinstance(image_base64, str) or not image_base64:
             raise ValueError("image_base64 must contain a non-empty base64 image")
+        image_base64 = image_base64.strip()
         # Support data URLs commonly produced by chat / UI clients.
         if image_base64.startswith("data:"):
             header, sep, image_base64 = image_base64.partition(",")
-            if not sep or ";base64" not in header.lower():
+            header = header.lower()
+            if not sep or ";base64" not in header or not header.startswith("data:image/"):
                 raise ValueError("Expected a base64-encoded image data URL")
+        image_base64 = "".join(image_base64.split())
         # Reject oversized input before allocating decoded bytes (10 MiB maximum).
         if len(image_base64) > 14_500_000:
             raise ValueError("Image exceeds the 10 MiB size limit")
+        remainder = len(image_base64) % 4
+        if remainder == 1:
+            raise ValueError("Invalid base64 image")
+        if remainder:
+            image_base64 += "=" * (4 - remainder)
         try:
             raw = base64.b64decode(image_base64, validate=True)
         except (ValueError, binascii.Error) as exc:

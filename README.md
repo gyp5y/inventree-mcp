@@ -155,27 +155,26 @@ requires an explicit `data.allow_shared_template_change: true` flag. Use
 
 ## Upload images from chat
 
-Chat attachments are **not automatically visible to the remote MCP server**.
-The chat client must first provide the bytes of an accessible image (for example,
-from a user-uploaded project photo), encoded as base64. A chat-internal image ID,
-message link, or sandbox path on a different host is not sufficient. The MCP
-server does not attempt to scrape chat histories or fetch arbitrary image URLs.
+ChatGPT can pass an attached original through the native `image_file` parameter.
+The MCP server downloads its short-lived HTTPS URL, validates the actual image
+signature and size, and forwards the original bytes to InvenTree.
 
 For a part's **main image**, call the `part` tool:
 
 ```json
-{"operation":"upload_image","pk":123,"data":{"image_base64":"<BASE64_JPEG>","filename":"mosfet-marking.jpg"}}
+{"operation":"upload_image","pk":123,"image_file":"<attached original>","data":{"replace":false}}
 ```
 
 Use `data.replace=true` to explicitly replace an existing main image. For
 additional photographs (marking, package, tray), call `attachment`:
 
 ```json
-{"operation":"upload_image","model_type":"part","model_id":123,"image_base64":"<BASE64_PNG>","filename":"package.png","comment":"Original photo from inventory chat"}
+{"operation":"upload_image","model_type":"part","model_id":123,"image_file":"<attached original>","comment":"Original photo from inventory chat"}
 ```
 
-`attachment.upload_image` also supports `model_type="stockitem"`. The existing
-`attachment.upload` operation accepts a file path **on the MCP server**; it
+`attachment.upload_image` also supports `model_type="stockitem"`. The Base64
+input remains available for MCP clients without native file parameters. The
+existing `attachment.upload` operation accepts a file path **on the MCP server**; it
 cannot read a local path from a different ChatGPT or Docker host. The `part`
 `upload_image` operation also supports `data.file_path` on the MCP server.
 

@@ -338,6 +338,7 @@ name = "inventree-mcp"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "inventree" },
     { name = "mcp" },
     { name = "python-dotenv" },
@@ -345,6 +346,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "inventree", specifier = ">=0.22.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },

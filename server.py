@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""InvenTree MCP Server — 12 parameterized tools, 117 operations.
+"""InvenTree MCP Server — 12 parameterized tools, 118 operations.
 
 Dual transport: STDIO (default) or SSE (pass 'sse' argument).
 Uses inventree-python library wrapped in asyncio.to_thread() for async safety.
@@ -336,12 +336,12 @@ async def stock(
       Read: list, get, get_by_location, get_by_part, list_locations,
         get_location, get_tracking, get_test_results
       Write: create, update, transfer, count, add, remove, create_location,
-        upload_test_result
+        update_location, upload_test_result
 
     Args:
         operation: One of the operations listed above.
-        pk: Stock item or location ID.
-        data: Dict of fields for create/update.
+        pk: Stock item ID for item operations; location ID for get_location/update_location.
+        data: Dict of fields for create/update/update_location.
         part_id: Filter stock by part (for list, get_by_part).
         location_id: Filter stock by location or transfer destination.
         quantity: Quantity for transfer/count/add/remove operations.
@@ -373,6 +373,10 @@ async def stock(
         return _json(await c.stock_create(data or {}))
 
     elif operation == "update":
+        if pk is None:
+            raise ValueError("pk stock item ID required")
+        if not data:
+            raise ValueError("data required")
         return _json(await c.stock_update(pk, data or {}))
 
     elif operation == "transfer":
@@ -404,6 +408,13 @@ async def stock(
 
     elif operation == "create_location":
         return _json(await c.stock_create_location(data or {}))
+
+    elif operation == "update_location":
+        if pk is None:
+            raise ValueError("pk location ID required")
+        if not data:
+            raise ValueError("data required")
+        return _json(await c.stock_update_location(pk, data))
 
     elif operation == "get_tracking":
         return _json(await c.stock_get_tracking(pk))

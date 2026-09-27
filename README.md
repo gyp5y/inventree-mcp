@@ -1,6 +1,6 @@
 # InvenTree MCP Server
 
-MCP server for [InvenTree](https://inventree.org) inventory management. Provides 12 parameterized tools covering 117 operations for parts, stock, build orders, purchase/sales/return orders, companies, barcodes, labels, reports, attachments, and system administration.
+MCP server for [InvenTree](https://inventree.org) inventory management. Provides 12 parameterized tools covering 118 operations for parts, stock, build orders, purchase/sales/return orders, companies, barcodes, labels, reports, attachments, and system administration.
 
 ## Requirements
 
@@ -82,7 +82,7 @@ Each tool uses a parameterized `operation` field to select the specific action.
 | Tool | Operations | Description |
 |------|-----------|-------------|
 | `part` | 21 | Part & category management (list, get, create, update, delete, BOM, suppliers, parameters) |
-| `stock` | 16 | Stock item & location management (list, get, create, transfer, count, add, remove) |
+| `stock` | 17 | Stock item & location management (list, get, create, update, transfer, count, add, remove, location operations) |
 | `build_order` | 9 | Manufacturing build orders (list, get, create, update, allocate, complete, cancel) |
 | `purchase_order` | 12 | Purchase order lifecycle (list, get, create, update, issue, receive, complete) |
 | `sales_order` | 14 | Sales order lifecycle (list, get, create, shipments, allocations) |
@@ -100,6 +100,18 @@ Each tool uses a parameterized `operation` field to select the specific action.
 - **`client.py`** — Async adapter wrapping the official [inventree-python](https://github.com/inventree/inventree-python) library via `asyncio.to_thread()` with a semaphore for concurrency control
 
 The `inventree-python` library is synchronous (requests-based). All calls are offloaded to threads to maintain async compatibility with the MCP framework.
+
+## Stock item and location updates
+
+The `stock` tool keeps stock item updates and location updates explicit:
+
+```json
+{"operation":"update","pk":123,"data":{"status":10}}
+{"operation":"update_location","pk":45,"data":{"name":"SMD reels","description":"Drawer A3"}}
+```
+
+For `operation="update"`, `pk` is always a `StockItem` ID. For
+`operation="update_location"`, `pk` is always a `StockLocation` ID.
 
 ## License
 

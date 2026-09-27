@@ -387,6 +387,9 @@ class InvenTreeClient:
         result = await self._create(StockLocation, data)
         return result if isinstance(result, dict) else result[0]
 
+    async def stock_update_location(self, pk: int, data: dict) -> dict:
+        return await self._update(StockLocation, pk, data)
+
     async def stock_delete_location(self, pk: int) -> dict:
         return await self._delete(StockLocation, pk)
 

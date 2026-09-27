@@ -1,5 +1,7 @@
 import base64
+import asyncio
 import unittest
+from unittest.mock import patch
 
 from client import InvenTreeClient
 
@@ -73,6 +75,57 @@ class DecodeImageTests(unittest.TestCase):
             InvenTreeClient._decode_image(base64.b64encode(webp).decode("ascii"), "photo.webp"),
             (webp, "photo.webp"),
         )
+
+    def test_native_file_download_preserves_valid_original_bytes(self):
+        raw = b"\x89PNG\r\n\x1a\n" + b"original-png-data"
+        image_file = {
+            "download_url": "https://files.example.test/photo",
+            "file_id": "file_123",
+            "mime_type": "image/png",
+            "file_name": "board.jpg",
+        }
+        client = object.__new__(InvenTreeClient)
+
+        with patch.object(InvenTreeClient, "_download_file_bytes", return_value=raw):
+            decoded, filename = asyncio.run(
+                client._download_image_file(image_file, "fallback.jpg")
+            )
+
+        self.assertEqual(decoded, raw)
+        self.assertEqual(filename, "board.png")
+
+    def test_native_file_rejects_non_image_mime_type(self):
+        client = object.__new__(InvenTreeClient)
+        image_file = {
+            "download_url": "https://files.example.test/photo",
+            "file_id": "file_123",
+            "mime_type": "text/plain",
+            "file_name": "photo.png",
+        }
+
+        with self.assertRaisesRegex(ValueError, "image MIME type"):
+            asyncio.run(client._download_image_file(image_file, "fallback.jpg"))
+
+    def test_native_file_rejects_non_image_bytes(self):
+        client = object.__new__(InvenTreeClient)
+        image_file = {
+            "download_url": "https://files.example.test/photo",
+            "file_id": "file_123",
+            "mime_type": "image/png",
+            "file_name": "photo.png",
+        }
+
+        with patch.object(
+            InvenTreeClient, "_download_file_bytes", return_value=b"not an image"
+        ), self.assertRaisesRegex(ValueError, "Unsupported image format"):
+            asyncio.run(client._download_image_file(image_file, "fallback.jpg"))
+
+    def test_native_file_rejects_private_or_non_https_url(self):
+        for url in ("http://example.com/photo.png", "https://127.0.0.1/photo.png"):
+            with self.subTest(url=url), self.assertRaisesRegex(
+                ValueError, "public HTTPS|public addresses"
+            ):
+                InvenTreeClient._validate_public_https_url(url)
 
 
 if __name__ == "__main__":

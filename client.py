@@ -7,13 +7,18 @@ semaphore to limit concurrent thread usage.
 import asyncio
 import base64
 import binascii
+import ipaddress
 import json
 import logging
 import os
+import socket
 import tempfile
 from pathlib import Path
 from functools import partial
 from typing import Any, Optional
+from urllib.parse import urljoin, urlparse
+
+import httpx
 
 from inventree.api import InvenTreeAPI
 from inventree.part import Part, PartCategory, BomItem, InternalPrice, PartTestTemplate, PartRelated
@@ -746,6 +751,30 @@ class InvenTreeClient:
     # ── Image uploads ─────────────────────────────────────────────────
 
     @staticmethod
+    def _validate_image_bytes(raw: bytes, filename: str) -> tuple[bytes, str]:
+        """Validate decoded image bytes and return a safe, matching filename."""
+        if not raw or len(raw) > 10 * 1024 * 1024:
+            raise ValueError("Image must be 1 byte to 10 MiB")
+        if raw.startswith(b"\xff\xd8\xff"):
+            extension = ".jpg"
+        elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            extension = ".png"
+        elif raw.startswith((b"GIF87a", b"GIF89a")):
+            extension = ".gif"
+        elif len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            extension = ".webp"
+        else:
+            raise ValueError("Unsupported image format; use JPEG, PNG, GIF or WebP")
+        if not isinstance(filename, str) or not filename.strip():
+            filename = "chat-photo" + extension
+        name = Path(filename).name
+        if name in (".", "..") or not name.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+            name = "chat-photo" + extension
+        elif Path(name).suffix.lower() not in ({".jpg", ".jpeg"} if extension == ".jpg" else {extension}):
+            name = Path(name).stem + extension
+        return raw, name
+
+    @staticmethod
     def _decode_image(image_base64: str, filename: str) -> tuple[bytes, str]:
         """Accept supported image bytes; never fetch user-supplied URLs on the server."""
         if not isinstance(image_base64, str) or not image_base64:
@@ -770,37 +799,81 @@ class InvenTreeClient:
             raw = base64.b64decode(image_base64, validate=True)
         except (ValueError, binascii.Error) as exc:
             raise ValueError("Invalid base64 image") from exc
-        if not raw or len(raw) > 10 * 1024 * 1024:
-            raise ValueError("Image must be 1 byte to 10 MiB")
-        if raw.startswith(b"\xff\xd8\xff"):
-            extension = ".jpg"
-        elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
-            extension = ".png"
-        elif raw.startswith((b"GIF87a", b"GIF89a")):
-            extension = ".gif"
-        elif len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
-            extension = ".webp"
-        else:
-            raise ValueError("Unsupported image format; use JPEG, PNG, GIF or WebP")
-        if not isinstance(filename, str) or not filename.strip():
-            filename = "chat-photo" + extension
-        name = Path(filename).name
-        if name in (".", "..") or not name.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-            name = "chat-photo" + extension
-        elif Path(name).suffix.lower() not in ({".jpg", ".jpeg"} if extension == ".jpg" else {extension}):
-            name = Path(name).stem + extension
-        return raw, name
+        return InvenTreeClient._validate_image_bytes(raw, filename)
+
+    @staticmethod
+    def _validate_public_https_url(url: str) -> None:
+        """Reject non-HTTPS and non-public download targets."""
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("image_file download_url must be a public HTTPS URL")
+        if parsed.port not in (None, 443):
+            raise ValueError("image_file download_url must use HTTPS port 443")
+        try:
+            addresses = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError("image_file download host could not be resolved") from exc
+        if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+            raise ValueError("image_file download_url must resolve only to public addresses")
+
+    @classmethod
+    def _download_file_bytes(cls, url: str) -> bytes:
+        """Download a small file while revalidating every redirect target."""
+        current_url = url
+        with httpx.Client(follow_redirects=False, timeout=20, trust_env=False) as client:
+            for _ in range(4):
+                cls._validate_public_https_url(current_url)
+                with client.stream("GET", current_url) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise ValueError("Image download redirect has no location")
+                        current_url = urljoin(current_url, location)
+                        continue
+                    response.raise_for_status()
+                    length = response.headers.get("content-length")
+                    if length and int(length) > 10 * 1024 * 1024:
+                        raise ValueError("Image exceeds the 10 MiB size limit")
+                    chunks = []
+                    size = 0
+                    for chunk in response.iter_bytes():
+                        size += len(chunk)
+                        if size > 10 * 1024 * 1024:
+                            raise ValueError("Image exceeds the 10 MiB size limit")
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+        raise ValueError("Image download exceeded the redirect limit")
+
+    async def _download_image_file(
+        self, image_file: dict, fallback_filename: str
+    ) -> tuple[bytes, str]:
+        """Download and validate a ChatGPT native file parameter."""
+        if not isinstance(image_file, dict):
+            raise ValueError("image_file must be a file object")
+        download_url = image_file.get("download_url")
+        file_id = image_file.get("file_id")
+        mime_type = image_file.get("mime_type")
+        if not isinstance(download_url, str) or not download_url:
+            raise ValueError("image_file.download_url is required")
+        if not isinstance(file_id, str) or not file_id:
+            raise ValueError("image_file.file_id is required")
+        if mime_type and (not isinstance(mime_type, str) or not mime_type.startswith("image/")):
+            raise ValueError("image_file must have an image MIME type")
+        raw = await run_sync(self._download_file_bytes, download_url)
+        filename = image_file.get("file_name") or fallback_filename
+        return self._validate_image_bytes(raw, filename)
 
     async def part_upload_image(
         self, part_id: int, *, image_base64: str = None,
-        file_path: str = None, filename: str = "chat-photo.jpg",
+        image_file: dict = None, file_path: str = None,
+        filename: str = "chat-photo.jpg",
         replace: bool = False,
     ) -> dict:
         """Upload the primary part image from chat bytes or a server-local file."""
         if not isinstance(part_id, int) or isinstance(part_id, bool) or part_id <= 0:
             raise ValueError("A valid part ID is required")
-        if bool(image_base64) == bool(file_path):
-            raise ValueError("Provide exactly one of image_base64 or file_path")
+        if sum(value is not None for value in (image_base64, image_file, file_path)) != 1:
+            raise ValueError("Provide exactly one of image_file, image_base64 or file_path")
         part = await run_sync(Part, self.api, part_id)
         current_image = _serialize(part).get("image")
         if current_image and not replace:
@@ -812,8 +885,15 @@ class InvenTreeClient:
             if path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                 raise ValueError("Unsupported image extension")
             await run_sync(part.uploadImage, str(path))
-        else:
+        elif image_base64 is not None:
             raw, name = self._decode_image(image_base64, filename)
+            # No shared persistent copies of chat photographs on the MCP host.
+            with tempfile.TemporaryDirectory(prefix="inventree-chat-photo-") as folder:
+                path = Path(folder) / name
+                path.write_bytes(raw)
+                await run_sync(part.uploadImage, str(path))
+        else:
+            raw, name = await self._download_image_file(image_file, filename)
             # No shared persistent copies of chat photographs on the MCP host.
             with tempfile.TemporaryDirectory(prefix="inventree-chat-photo-") as folder:
                 path = Path(folder) / name
@@ -823,7 +903,8 @@ class InvenTreeClient:
         return {"part": part_id, "image": _serialize(part).get("image"), "uploaded": True}
 
     async def attachment_upload_image(
-        self, model_type: str, model_id: int, *, image_base64: str,
+        self, model_type: str, model_id: int, *, image_base64: str = None,
+        image_file: dict = None,
         filename: str = "chat-photo.jpg", comment: str = "",
     ) -> dict:
         """Attach a chat image to a part or stock item as a separate photo."""
@@ -831,7 +912,12 @@ class InvenTreeClient:
             raise ValueError("Image attachments are supported for part and stockitem")
         if not isinstance(model_id, int) or isinstance(model_id, bool) or model_id <= 0:
             raise ValueError("A valid model_id is required")
-        raw, name = self._decode_image(image_base64, filename)
+        if (image_base64 is None) == (image_file is None):
+            raise ValueError("Provide exactly one of image_file or image_base64")
+        if image_file is not None:
+            raw, name = await self._download_image_file(image_file, filename)
+        else:
+            raw, name = self._decode_image(image_base64, filename)
         with tempfile.TemporaryDirectory(prefix="inventree-chat-photo-") as folder:
             path = Path(folder) / name
             path.write_bytes(raw)

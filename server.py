@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from mcp.server.stdio import stdio_server
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.message import SessionMessage
+from pydantic import BaseModel, ConfigDict
 from mcp.types import (
     ErrorData,
     JSONRPCError,
@@ -34,6 +35,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("inventree_mcp")
+
+
+class OpenAIFile(BaseModel):
+    """Native ChatGPT file input passed to an MCP tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    download_url: str
+    file_id: str
+    mime_type: str | None = None
+    file_name: str | None = None
 
 
 async def _handle_stdio_discover(message: SessionMessage, write_stream) -> bool:
@@ -156,7 +168,8 @@ def _safe(tool_name: str):
         "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": True,
-    }
+    },
+    meta={"openai/fileParams": ["image_file"]},
 )
 @_safe("part")
 async def part(
@@ -167,6 +180,7 @@ async def part(
     category: int = None,
     limit: int = 25,
     offset: int = 0,
+    image_file: OpenAIFile = None,
 ) -> str:
     """Part & category management in InvenTree.
 
@@ -183,7 +197,8 @@ async def part(
     Args:
         operation: One of the operations listed above.
         pk: Part or category ID (required for get/update/delete and sub-queries).
-        data: Dict of fields for create/update. upload_image uses pk=part ID and\n          data={"image_base64": "...", "filename": "photo.jpg", "replace": false}\n          or data={"file_path": "/path/on/mcp/server/photo.jpg", "replace": false}.\n          Parameter operations use pk=part ID;
+        data: Dict of fields for create/update. upload_image uses pk=part ID and\n          image_file=<attached original>, with optional data={"replace": false};\n          alternatively data={"image_base64": "...", "filename": "photo.jpg"}\n          or data={"file_path": "/path/on/mcp/server/photo.jpg"}.\n          Parameter operations use pk=part ID;
+        image_file: Original image attached through a native ChatGPT file parameter.
           create_parameter: {"template": 12, "data": "60 V", "note": "..."};
           update/delete_parameter: {"parameter_id": 34, "data": "..." };
           upsert_parameters: {"parameters": [{"template": 12, "data": "60 V"}]}.
@@ -223,6 +238,7 @@ async def part(
     elif operation == "upload_image":
         return _json(await c.part_upload_image(
             pk, image_base64=(data or {}).get("image_base64"),
+            image_file=image_file.model_dump(exclude_none=True) if image_file else None,
             file_path=(data or {}).get("file_path"),
             filename=(data or {}).get("filename", "chat-photo.jpg"),
             replace=(data or {}).get("replace", False)))
@@ -1004,7 +1020,8 @@ async def report(
         "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": True,
-    }
+    },
+    meta={"openai/fileParams": ["image_file"]},
 )
 @_safe("attachment")
 async def attachment(
@@ -1018,6 +1035,7 @@ async def attachment(
     destination: str = None,
     image_base64: str = None,
     filename: str = "chat-photo.jpg",
+    image_file: OpenAIFile = None,
 ) -> str:
     """File attachment management for any InvenTree object.
 
@@ -1031,7 +1049,7 @@ async def attachment(
         model_type: Object type (part, stockitem, build, purchaseorder, salesorder, company).
         model_id: Object ID for list/upload/upload_link.
         attachment_id: Attachment ID for download/delete.
-        file_path: Local file path on the MCP server for upload.\n        image_base64: Base64 image data or data URL for upload_image.\n        filename: Image filename for upload_image.\n        link: URL for upload_link.
+        file_path: Local file path on the MCP server for upload.\n        image_base64: Base64 image data or data URL for upload_image.\n        image_file: Original image attached through a native ChatGPT file parameter.\n        filename: Fallback image filename for upload_image.\n        link: URL for upload_link.
         comment: Optional comment for uploads.
         destination: File path to save downloaded attachment to.
 
@@ -1052,6 +1070,7 @@ async def attachment(
     elif operation == "upload_image":
         return _json(await c.attachment_upload_image(
             model_type, model_id, image_base64=image_base64,
+            image_file=image_file.model_dump(exclude_none=True) if image_file else None,
             filename=filename, comment=comment))
 
     elif operation == "download":

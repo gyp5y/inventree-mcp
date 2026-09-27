@@ -179,7 +179,10 @@ additional photographs (marking, package, tray), call `attachment`:
 cannot read a local path from a different ChatGPT or Docker host. The `part`
 `upload_image` operation also supports `data.file_path` on the MCP server.
 
-Supported formats: JPEG, PNG, GIF, WebP (max 10 MiB). Chat bytes are written
-into a temporary directory for the duration of the upload and removed after it.
-The image persists in InvenTree after successful upload. InvenTree must have
-media storage correctly configured and the API token must allow file upload.
+Supported formats: JPEG, PNG, GIF, WebP (max 10 MiB). Plain base64 and
+`data:image/...;base64,...` data URLs are accepted; whitespace and omitted
+padding are normalized before the decoded bytes are checked for a real image
+signature. Chat bytes are written into a temporary directory for the duration of
+the upload and removed after it. The image persists in InvenTree after
+successful upload. InvenTree must have media storage correctly configured and
+the API token must allow file upload.
